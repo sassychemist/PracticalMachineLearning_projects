@@ -1,0 +1,182 @@
+---
+title: "Analysing Wearable Training Data"
+author: "Sujata Emani"
+date: "July 21, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, strip.white = TRUE, size = "small")
+```
+
+## Summary
+
+This is a review and analysis of data from a wearable device. The Analysis will entail using data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants to determine how well they do a particular activity. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways.
+
+```{r load packages, results ='hide', message = FALSE, warning=FALSE}
+library(knitr)
+library(caret)
+library(rpart)
+library(rattle)
+library(randomForest)
+library(gbm)
+```
+
+### Loading the Data
+
+```{r acquiring data, cache = TRUE}
+train_url <-"https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+test_url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+training <- read.csv(url(train_url), na.strings = c("NA", "#DIV/0!", ""))
+testing <- read.csv(url(test_url), na.strings = c("NA", "#DIV/0!", ""))
+```
+
+### Creating a training and data set for internal test
+
+```{r Internal Training Set, cache = TRUE}
+set.seed(98765)
+inTrain <- createDataPartition(training$classe, p = 0.65, list = FALSE)
+myTrainingSet <- training[inTrain, ]
+myTestingSet <- training[-inTrain, ]
+dim(myTrainingSet); dim(myTestingSet)
+```
+
+```{r Remove Near Zero Variance, cache = TRUE}
+## clear near zero variance columns from myTrainingSet
+nearZero <- nearZeroVar(myTrainingSet, saveMetrics = TRUE)
+myTrainingSet <- myTrainingSet[, nearZero$nzv == FALSE]
+
+## clear near zero variance columns from myTestingSet
+nearZero <- nearZeroVar(myTestingSet, saveMetrics = TRUE)
+myTestingSet <- myTestingSet[, nearZero$nzv == FALSE]
+```
+
+### Cleaning up the Data
+
+There are a lot of NA in each of the measured parameters. It's best to analyze the columns with fewer than 40% of NAs.
+
+```{r Remove column when more than 40% of a column is NA, cache = TRUE}
+myTrainingSet <- myTrainingSet[c(-1)]
+rmNATrainingSet <- myTrainingSet
+for(i in 1:length(myTrainingSet)){
+    if(sum(is.na(myTrainingSet[,i]))/nrow(myTrainingSet) >= 0.4){
+        for(j in 1:length(rmNATrainingSet)){
+            if(length(grep(names(myTrainingSet[i]), names(rmNATrainingSet)[j])) == 1){
+                rmNATrainingSet <- rmNATrainingSet[,-j]
+            }
+        }
+    }
+}
+myTrainingSet <- rmNATrainingSet
+rm(rmNATrainingSet)
+```
+
+### Imputing the Missing NAs for the remaining columns
+
+The variables which have NAs can be imputed with the mean of the column. 
+
+```{r impute NA, cache = TRUE}
+suppressWarnings(
+    for(i in 1:length(myTrainingSet)){
+        current_mean <- mean(myTrainingSet[,i], na.rm = TRUE)
+        currentVector <- myTrainingSet[,i]
+        myTrainingSet[,i][is.na(currentVector)] = current_mean
+})
+```
+
+### Transforming the Data sets to be the same format
+
+```{r transforming data sets, cache = TRUE}
+## checking is the classes of each column in the data sets are the same
+myTestingSet <- myTestingSet[colnames(myTrainingSet)]
+testing <- testing[colnames(myTrainingSet[,-58])]
+class_compare <- data.frame(y1 = sapply(testing,class), y2 = sapply(myTrainingSet[,-58],class))
+dim(myTestingSet); dim(testing)
+
+## the classes are not all the same, so make them the same.
+for(i in 1:length(myTrainingSet)){
+    for(j in 1:length(testing)) {
+        if(length(grep(names(myTrainingSet[i]), names(testing)[j])) == 1){
+            class(testing[j]) <-class(myTrainingSet[i])
+        }
+    }
+}
+## combining the data sets
+testing <- rbind(myTrainingSet[2, -58], testing)
+testing <- testing[-1,]
+```
+
+## Prediction Modeling
+### Predicting with Rpart
+```{r Rpart, cache = TRUE}
+set.seed(98765)
+modFit_rpart <- train(classe~. , data = myTrainingSet, method = "rpart")
+fancyRpartPlot(modFit_rpart$finalModel)
+```
+
+### Reviewing the Accuracy with rpart 
+
+```{r ConfusionMatrix with Rpart, cache = TRUE}
+cfm_rpart<- confusionMatrix(myTestingSet$classe, predict(modFit_rpart, myTestingSet))
+cfm_rpart
+plot(cfm_rpart$table)
+```
+
+The Recursive Partitioning Method indicates an Accuracy Result of 64.79%. 
+
+### Prediction with Random Forests
+
+```{r RandomForests, cache = TRUE}
+set.seed(98765)
+modFit_rf <- randomForest(classe~., data = myTrainingSet)
+```
+
+### Reviewing the Accuracy with Random Forests
+
+```{r Accuracy of Random Forest, cache = TRUE}
+predict_rf <- predict(modFit_rf, myTestingSet)
+cfm_rf<- confusionMatrix(myTestingSet$classe, predict_rf)
+cfm_rf
+plot(cfm_rf$table, main = "Confusion Matrix (Random Forest)")
+plot(modFit_rf, main = "Random Forest Model Fit")
+```
+
+The Random Forest indicates an Accuracy result of 99.87%. The accuracy exceeds the Recursive Partitioning Method. 
+
+### Prediction utilizing the Gradient Boosting Method
+
+```{r Gradient Boosting Model, cache = TRUE}
+set.seed(98765)
+control <- trainControl(method = "repeatedcv",number = 5, repeats = 1)
+modelFit_gbm <- train(classe ~ ., data = myTrainingSet, method = "gbm", trControl = control, verbose = FALSE)
+```
+
+### Reviewing the Accuracy based on GBM
+
+```{r Predictions based on GBM, cache = TRUE}
+predictGbm <- predict(modelFit_gbm, newdata = myTestingSet)
+cfm_gbm<- confusionMatrix(myTestingSet$classe, predictGbm)
+cfm_gbm
+```
+The Gradient Boosting Model with number of trees restricted to 5 and no more than 1 repeat employing the repeated cross validation method was determined to have an Accuracy result of 99.59%.
+
+```{r plots of ConfusionMatrix GBM, cache = TRUE}
+plot(cfm_gbm$table, main = "Confusion Matrix with GBM")
+plot(modelFit_gbm)
+```
+
+The data on Accuracy indicate that the Random Forest Learning Method is the best to move forward and evaluate the testing data.
+
+```{r evaluated the Testing Data, cache = TRUE}
+predict_testingData <- predict(modFit_rf, testing)
+predict_testingData
+```
+
+The Testing Data loaded from the website was evaluated utilizing the Random Forest Learning Model and the Predicted Results are shown above. 
+
+-------------------------------------------------------------------------------
+Citation for the Data utilized for this analysis.
+
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+
+Read more: http://groupware.les.inf.puc-rio.br/har#wle_paper_section#ixzz5LvqbNoEo
